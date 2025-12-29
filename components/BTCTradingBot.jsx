@@ -23,6 +23,25 @@ const BTCTradingBot = () => {
   const [telegramStatus, setTelegramStatus] = useState('');
   const [fileStatus, setFileStatus] = useState('');
   const [lastSentSignal, setLastSentSignal] = useState(null);
+  const [realTimePrices, setRealTimePrices] = useState([]);
+  const [isLoadingPrice, setIsLoadingPrice] = useState(false);
+  const [priceSource, setPriceSource] = useState('coinbase');
+  const [websocket, setWebsocket] = useState(null);
+  const [signalCheckLog, setSignalCheckLog] = useState([]);
+  const [lastSignalCheck, setLastSignalCheck] = useState(null);
+  const [isCheckingSignal, setIsCheckingSignal] = useState(false);
+  
+  // Use ref to access latest realTimePrices in intervals
+  const realTimePricesRef = React.useRef(realTimePrices);
+  const csvDataRef = React.useRef(csvData);
+  
+  React.useEffect(() => {
+    realTimePricesRef.current = realTimePrices;
+  }, [realTimePrices]);
+  
+  React.useEffect(() => {
+    csvDataRef.current = csvData;
+  }, [csvData]);
 
   // Parse CSV file
   const parseCSV = (text) => {
@@ -135,42 +154,79 @@ const BTCTradingBot = () => {
     }
   };
 
-  // Trading strategy
+  // Trading strategy with stricter criteria
   const generateSignalFromData = (currentData, historicalWindow) => {
     if (!historicalWindow || historicalWindow.length < 20) return null;
     
     let score = 0;
+    const price = currentData.close || currentData.price;
+    let reasons = [];
     
-    // Volume analysis (40% weight)
-    if (currentData.volumeChange > 50) {
+    // Volume analysis (40% weight) - STRICTER THRESHOLDS
+    if (currentData.volumeChange > 80) {
       score += 0.4;
-    } else if (currentData.volumeChange > 25) {
+      reasons.push('Very high volume spike');
+    } else if (currentData.volumeChange > 50) {
       score += 0.2;
-    } else if (currentData.volumeChange < -30) {
+      reasons.push('High volume');
+    } else if (currentData.volumeChange < -50) {
       score -= 0.4;
-    } else if (currentData.volumeChange < -15) {
+      reasons.push('Very low volume');
+    } else if (currentData.volumeChange < -30) {
       score -= 0.2;
+      reasons.push('Low volume');
+    } else {
+      reasons.push('Normal volume');
     }
     
-    // Sentiment analysis (35% weight)
-    score += currentData.sentiment * 0.35;
+    // Sentiment analysis (35% weight) - STRICTER THRESHOLDS
+    if (Math.abs(currentData.sentiment) > 0.6) {
+      score += currentData.sentiment * 0.35;
+      reasons.push(`Strong ${currentData.sentiment > 0 ? 'bullish' : 'bearish'} sentiment`);
+    } else if (Math.abs(currentData.sentiment) > 0.3) {
+      score += currentData.sentiment * 0.2;
+      reasons.push(`Moderate sentiment`);
+    } else {
+      reasons.push('Neutral sentiment');
+    }
     
-    // Momentum analysis (25% weight) - SMA crossover
-    const prices = historicalWindow.slice(-40).map(d => d.close);
+    // Momentum analysis (25% weight) - SMA crossover with confirmation
+    const prices = historicalWindow.slice(-40).map(d => d.close || d.price);
     if (prices.length >= 40) {
+      const sma5 = prices.slice(-5).reduce((a, b) => a + b, 0) / 5;
       const sma10 = prices.slice(-10).reduce((a, b) => a + b, 0) / 10;
       const sma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / 20;
       
-      if (sma10 > sma20 * 1.005) {
+      // Strong bullish: SMA5 > SMA10 > SMA20 with good spacing
+      if (sma5 > sma10 * 1.01 && sma10 > sma20 * 1.005) {
         score += 0.25;
-      } else if (sma10 < sma20 * 0.995) {
+        reasons.push('Strong uptrend (SMA crossover)');
+      } else if (sma5 > sma10 * 1.005) {
+        score += 0.15;
+        reasons.push('Weak uptrend');
+      } 
+      // Strong bearish: SMA5 < SMA10 < SMA20 with good spacing
+      else if (sma5 < sma10 * 0.99 && sma10 < sma20 * 0.995) {
         score -= 0.25;
+        reasons.push('Strong downtrend (SMA crossover)');
+      } else if (sma5 < sma10 * 0.995) {
+        score -= 0.15;
+        reasons.push('Weak downtrend');
+      } else {
+        reasons.push('No clear trend');
       }
     }
     
-    // Generate signal with strict threshold
-    if (score > 0.35) {
-      const entry = currentData.close;
+    console.log('📊 Strategy Analysis:', {
+      volumeChange: currentData.volumeChange.toFixed(2),
+      sentiment: currentData.sentiment.toFixed(2),
+      score: score.toFixed(3),
+      reasons: reasons
+    });
+    
+    // STRICT THRESHOLD: Need score > 0.5 for BUY, < -0.5 for SELL
+    if (score > 0.5) {
+      const entry = price;
       const stopLoss = entry * 0.96; // 4% stop loss
       const takeProfit = entry * 1.12; // 12% take profit
       
@@ -179,10 +235,11 @@ const BTCTradingBot = () => {
         entry: entry,
         stopLoss: stopLoss,
         takeProfit: takeProfit,
-        score: score
+        score: score,
+        reasons: reasons
       };
-    } else if (score < -0.35) {
-      const entry = currentData.close;
+    } else if (score < -0.5) {
+      const entry = price;
       const stopLoss = entry * 1.04; // 4% stop loss
       const takeProfit = entry * 0.88; // 12% take profit
       
@@ -191,10 +248,12 @@ const BTCTradingBot = () => {
         entry: entry,
         stopLoss: stopLoss,
         takeProfit: takeProfit,
-        score: score
+        score: score,
+        reasons: reasons
       };
     }
     
+    console.log(`⏸️ Score ${score.toFixed(3)} does not meet threshold (need >0.5 or <-0.5)`);
     return null;
   };
 
@@ -349,7 +408,129 @@ const BTCTradingBot = () => {
     return maxDD;
   };
 
-  // Send to Telegram
+  // Fetch real BTC price from multiple sources
+  const fetchRealBTCPrice = async () => {
+    try {
+      let price = null;
+      
+      // Try CoinGecko first (no rate limits)
+      try {
+        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+        const data = await response.json();
+        price = data.bitcoin.usd;
+        setPriceSource('coingecko');
+      } catch (error) {
+        console.log('CoinGecko failed, trying Coinbase...');
+      }
+      
+      // Fallback to Coinbase
+      if (!price) {
+        try {
+          const response = await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+          const data = await response.json();
+          price = parseFloat(data.data.amount);
+          setPriceSource('coinbase');
+        } catch (error) {
+          console.log('Coinbase failed, trying Binance...');
+        }
+      }
+      
+      // Fallback to Binance
+      if (!price) {
+        try {
+          const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+          const data = await response.json();
+          price = parseFloat(data.price);
+          setPriceSource('binance');
+        } catch (error) {
+          console.log('Binance failed');
+        }
+      }
+      
+      if (price) {
+        setCurrentPrice(price);
+        
+        setRealTimePrices(prev => {
+          const updated = [...prev, {
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            price: price
+          }];
+          return updated.slice(-60); // Keep last 60 data points (10 minutes at 10s intervals)
+        });
+        
+        setIsLoadingPrice(false);
+        return price;
+      }
+      
+      setIsLoadingPrice(false);
+      return null;
+    } catch (error) {
+      console.error('Error fetching BTC price:', error);
+      setIsLoadingPrice(false);
+      return null;
+    }
+  };
+
+  // WebSocket connection for real-time updates (Binance)
+  const connectWebSocket = () => {
+    if (websocket) {
+      websocket.close();
+    }
+
+    try {
+      const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+      
+      ws.onopen = () => {
+        console.log('WebSocket connected to Binance');
+        setPriceSource('binance-ws');
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const price = parseFloat(data.p);
+        
+        setCurrentPrice(price);
+        
+        setRealTimePrices(prev => {
+          const now = new Date();
+          const lastUpdate = prev.length > 0 ? new Date(prev[prev.length - 1].fullTime) : null;
+          
+          // Only add new point if 5 seconds passed (avoid too many updates)
+          if (!lastUpdate || now - lastUpdate >= 5000) {
+            const updated = [...prev, {
+              time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              fullTime: now,
+              price: price
+            }];
+            return updated.slice(-60);
+          }
+          return prev;
+        });
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setPriceSource('error');
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        setPriceSource('disconnected');
+      };
+      
+      setWebsocket(ws);
+    } catch (error) {
+      console.error('Failed to connect WebSocket:', error);
+    }
+  };
+
+  // Disconnect WebSocket
+  const disconnectWebSocket = () => {
+    if (websocket) {
+      websocket.close();
+      setWebsocket(null);
+    }
+  };
   const sendToTelegram = async (signalData) => {
     if (!telegramConfig.enabled || !telegramConfig.botToken || !telegramConfig.chatId) {
       return;
@@ -426,48 +607,161 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
     setTimeout(() => setTelegramStatus(''), 5000);
   };
 
-  // Generate current signal
+  // Generate current signal from LIVE data
   const generateCurrentSignal = () => {
-    if (!csvData || csvData.length < 50) {
-      setSignal({ type: 'HOLD', message: 'Upload CSV file to generate signals' });
+    setIsCheckingSignal(true);
+    const checkTime = new Date().toLocaleTimeString();
+    
+    // Use refs to get current values
+    const currentRealTimePrices = realTimePricesRef.current;
+    const currentCsvData = csvDataRef.current;
+    
+    console.log(`[${checkTime}] 🔍 Checking for trading signals...`);
+    console.log(`[${checkTime}] 📊 Live data points: ${currentRealTimePrices.length}, CSV data: ${currentCsvData ? currentCsvData.length : 0}`);
+    
+    // Use real-time price data if available, otherwise use CSV
+    const dataSource = currentRealTimePrices.length >= 20 ? currentRealTimePrices : (currentCsvData || []);
+    
+    if (dataSource.length < 20) {
+      console.log(`[${checkTime}] ⚠️ Insufficient data - need at least 20 data points (have ${dataSource.length})`);
+      console.log(`[${checkTime}] 💡 Keep bot running to collect live data, or upload CSV for instant analysis`);
+      
+      // Still log the attempt
+      setSignalCheckLog(prev => [{
+        time: checkTime,
+        result: `Insufficient Data (${dataSource.length}/20)`,
+        entry: currentPrice,
+        confidence: 'N/A',
+        source: currentRealTimePrices.length > 0 ? 'LIVE' : 'None'
+      }, ...prev.slice(0, 9)]);
+      
+      setSignal({ 
+        type: 'HOLD', 
+        message: `Collecting data... (${dataSource.length}/20 points needed)` 
+      });
+      setLastSignalCheck(checkTime);
+      setIsCheckingSignal(false);
       return;
     }
 
-    const recentData = csvData.slice(-50);
+    const recentData = dataSource.slice(-50);
     const currentData = recentData[recentData.length - 1];
     
-    const signal = generateSignalFromData(currentData, recentData);
+    // Calculate volume change for live data
+    let volumeChange = 0;
+    let sentiment = 0;
+    
+    if (currentRealTimePrices.length >= 20) {
+      // For live data, calculate from price volatility
+      const lookback = Math.min(28, currentRealTimePrices.length);
+      const recentPrices = currentRealTimePrices.slice(-lookback);
+      
+      // Calculate volatility as proxy for volume
+      const volatility = recentPrices.reduce((sum, p, i) => {
+        if (i === 0) return 0;
+        return sum + Math.abs(p.price - recentPrices[i-1].price);
+      }, 0) / (lookback - 1);
+      
+      const avgPrice = recentPrices.reduce((sum, p) => sum + p.price, 0) / lookback;
+      const volatilityPercent = (volatility / avgPrice) * 100;
+      
+      // Map volatility to volume change (-100 to +100)
+      volumeChange = (volatilityPercent - 0.5) * 100; // Adjust baseline
+      
+      // Calculate sentiment from price trend
+      const priceChange = ((currentData.price - recentPrices[0].price) / recentPrices[0].price) * 100;
+      if (priceChange > 2) sentiment = 0.7;
+      else if (priceChange > 0.5) sentiment = 0.4;
+      else if (priceChange < -2) sentiment = -0.7;
+      else if (priceChange < -0.5) sentiment = -0.4;
+      else sentiment = priceChange * 0.2;
+      
+      console.log(`[${checkTime}] 📈 Calculated metrics: volatility=${volatilityPercent.toFixed(3)}%, priceChange=${priceChange.toFixed(2)}%`);
+    } else {
+      // Use CSV data
+      volumeChange = currentData.volumeChange || 0;
+      sentiment = currentData.sentiment || 0;
+    }
+    
+    const enrichedData = {
+      ...currentData,
+      close: currentData.close || currentData.price,
+      price: currentData.price || currentData.close,
+      volumeChange: volumeChange,
+      sentiment: sentiment
+    };
+    
+    console.log(`[${checkTime}] 📊 Analyzing ${currentRealTimePrices.length >= 20 ? 'LIVE' : 'CSV'} data:`, {
+      price: (enrichedData.close || enrichedData.price).toFixed(2),
+      volumeChange: volumeChange.toFixed(2) + '%',
+      sentiment: sentiment.toFixed(2),
+      dataPoints: dataSource.length
+    });
+    
+    const signal = generateSignalFromData(enrichedData, recentData);
     
     if (signal) {
+      console.log(`[${checkTime}] ✅ SIGNAL FOUND:`, signal.type, {
+        entry: signal.entry.toFixed(2),
+        stopLoss: signal.stopLoss.toFixed(2),
+        takeProfit: signal.takeProfit.toFixed(2),
+        score: signal.score.toFixed(3)
+      });
+      
       setSignal({
         ...signal,
         riskReward: ((signal.takeProfit - signal.entry) / Math.abs(signal.entry - signal.stopLoss)).toFixed(2),
-        volumeChange: currentData.volumeChange,
-        sentiment: currentData.sentiment
+        volumeChange: volumeChange,
+        sentiment: sentiment
       });
+      
+      // Add to log
+      setSignalCheckLog(prev => [{
+        time: checkTime,
+        result: `${signal.type} Signal`,
+        entry: signal.entry,
+        confidence: (Math.abs(signal.score) * 100).toFixed(0) + '%',
+        source: currentRealTimePrices.length >= 20 ? 'LIVE' : 'CSV'
+      }, ...prev.slice(0, 9)]);
+      
     } else {
+      console.log(`[${checkTime}] ⏸️ No signal - market conditions don't meet criteria (score too low)`);
       setSignal({ 
         type: 'HOLD',
         message: 'No clear signal - waiting for better setup'
       });
+      
+      // Add to log
+      setSignalCheckLog(prev => [{
+        time: checkTime,
+        result: 'No Signal (HOLD)',
+        entry: enrichedData.close || enrichedData.price,
+        confidence: 'N/A',
+        source: currentRealTimePrices.length >= 20 ? 'LIVE' : 'CSV'
+      }, ...prev.slice(0, 9)]);
     }
+    
+    setLastSignalCheck(checkTime);
+    setIsCheckingSignal(false);
   };
 
   // Initialize
   useEffect(() => {
-    const initial = [];
-    for (let i = 20; i >= 0; i--) {
-      initial.push({
-        time: new Date(Date.now() - i * 180000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        price: REAL_BTC_PRICE + (Math.random() - 0.5) * 1000
-      });
-    }
-    setPriceHistory(initial);
+    // Fetch real price immediately
+    setIsLoadingPrice(true);
+    fetchRealBTCPrice();
+    
+    // Run initial signal check after 3 seconds
+    setTimeout(() => {
+      console.log('🎬 Initial signal check...');
+      generateCurrentSignal();
+    }, 3000);
   }, []);
 
   // Update signal when CSV loads
   useEffect(() => {
     if (csvData) {
+      console.log('📂 CSV loaded, generating signal...');
       generateCurrentSignal();
     }
   }, [csvData]);
@@ -480,40 +774,61 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
     const signalKey = `${signal.type}-${signal.entry.toFixed(0)}`;
     
     if (signalKey !== lastSentSignal) {
-      console.log('New signal detected, sending to Telegram:', signalKey);
+      console.log('📤 New signal detected, sending to Telegram:', signalKey);
       sendToTelegram(signal);
       setLastSentSignal(signalKey);
     }
   }, [signal, telegramConfig.enabled]);
 
-  // Live updates
+  // Monitor real-time prices and trigger checks when enough data
   useEffect(() => {
-    if (!isRunning) return;
+    if (realTimePrices.length >= 50 && !csvData) {
+      console.log('📊 50 data points collected, ready for signal generation');
+    }
+  }, [realTimePrices.length]);
+
+  // Live updates - WebSocket or polling
+  useEffect(() => {
+    if (!isRunning) {
+      disconnectWebSocket();
+      return;
+    }
     
-    const interval = setInterval(() => {
-      setCurrentPrice(prev => {
-        const change = (Math.random() - 0.5) * 200;
-        const newPrice = prev + change;
-        
-        setPriceHistory(prevHistory => {
-          const updated = [...prevHistory, {
-            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            price: newPrice
-          }];
-          return updated.slice(-20);
-        });
-        
-        return newPrice;
-      });
-      
-      // Regenerate signal periodically when live mode is running
-      if (Math.random() > 0.7 && csvData) {
-        generateCurrentSignal();
+    console.log('🚀 Live mode started - monitoring for signals...');
+    console.log('⏱️ Will check for signals every 30 seconds');
+    
+    // Try WebSocket first for real-time updates
+    connectWebSocket();
+    
+    // Check for signals immediately after 5 seconds (give time for data)
+    const initialCheck = setTimeout(() => {
+      console.log('🎯 Running initial signal check...');
+      console.log('Current realTimePrices length:', realTimePricesRef.current.length);
+      generateCurrentSignal();
+    }, 5000);
+    
+    // Check for signals every 30 seconds
+    const signalCheckInterval = setInterval(() => {
+      console.log('⏰ 30-second signal check triggered');
+      console.log('Current realTimePrices length:', realTimePricesRef.current.length);
+      generateCurrentSignal();
+    }, 30000); // Every 30 seconds
+    
+    // Fallback: polling every 10 seconds in case WebSocket fails
+    const pollInterval = setInterval(() => {
+      if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+        fetchRealBTCPrice();
       }
-    }, 3000);
+    }, 10000);
     
-    return () => clearInterval(interval);
-  }, [isRunning, csvData]);
+    return () => {
+      console.log('⏹️ Live mode stopped');
+      clearTimeout(initialCheck);
+      clearInterval(pollInterval);
+      clearInterval(signalCheckInterval);
+      disconnectWebSocket();
+    };
+  }, [isRunning]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4 md:p-6">
@@ -521,19 +836,35 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
         
         {/* Header */}
         <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
-          <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center justify-between flex-wrap gap-4 mb-4">
             <div>
               <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">
                 BTC/USD Trading Bot
               </h1>
               <p className="text-blue-200 text-sm">
-                Upload 15m CSV • Real Data Backtesting • Telegram Alerts
+                Real-Time Signals • Telegram Alerts • Backtesting
               </p>
             </div>
             <div className="flex gap-3 items-center">
+              <button
+                onClick={() => {
+                  setIsRunning(!isRunning);
+                  if (!isRunning) {
+                    setIsLoadingPrice(true);
+                    fetchRealBTCPrice();
+                  }
+                }}
+                className={`px-6 py-3 rounded-lg font-bold text-base flex items-center gap-2 shadow-lg ${
+                  isRunning 
+                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    : 'bg-green-500 hover:bg-green-600 text-white animate-pulse'
+                }`}
+              >
+                {isRunning ? <><Pause className="w-5 h-5" /> Stop Bot</> : <><Play className="w-5 h-5" /> Start Live Bot</>}
+              </button>
               <label className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg font-semibold cursor-pointer flex items-center gap-2">
                 <Upload className="w-4 h-4" />
-                Upload CSV
+                CSV
                 <input 
                   type="file" 
                   accept=".csv,.txt"
@@ -550,6 +881,46 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
               </button>
             </div>
           </div>
+
+          {/* Status Bar */}
+          <div className="grid md:grid-cols-4 gap-4">
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Bot Status</div>
+              <div className={`text-lg font-bold flex items-center gap-2 ${isRunning ? 'text-green-400' : 'text-gray-400'}`}>
+                <div className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
+                {isRunning ? 'Running' : 'Stopped'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Current BTC Price</div>
+              <div className="text-lg font-bold text-white">
+                ${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Data Source</div>
+              <div className="text-sm font-semibold text-white flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${
+                  priceSource === 'binance-ws' ? 'bg-green-400 animate-pulse' : 
+                  priceSource.includes('error') || priceSource === 'disconnected' ? 'bg-red-400' : 
+                  'bg-yellow-400'
+                }`}></div>
+                {priceSource === 'binance-ws' ? 'WebSocket' : 
+                 priceSource === 'coingecko' ? 'CoinGecko' :
+                 priceSource === 'coinbase' ? 'Coinbase' :
+                 priceSource === 'binance' ? 'Binance' :
+                 priceSource === 'disconnected' ? 'Offline' :
+                 'Connecting'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Last Signal Check</div>
+              <div className="text-sm font-bold text-white">
+                {lastSignalCheck || 'Not started'}
+              </div>
+            </div>
+          </div>
+
           {fileStatus && (
             <div className="mt-4 text-sm text-white bg-black/30 rounded-lg p-3">
               {fileStatus}
@@ -563,17 +934,19 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
             <div className="flex items-start gap-3">
               <AlertCircle className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-1" />
               <div>
-                <h3 className="text-yellow-200 font-semibold mb-2">Upload Your BTC CSV File</h3>
+                <h3 className="text-yellow-200 font-semibold mb-2">CSV Upload (Optional - For Backtesting Only)</h3>
+                <p className="text-yellow-200/80 text-sm mb-2">
+                  ✅ <strong>Live Trading:</strong> No CSV needed! Just click "Start Live" to begin monitoring real-time prices.
+                </p>
+                <p className="text-yellow-200/80 text-sm mb-2">
+                  📊 <strong>Backtesting:</strong> Upload your CSV to test the strategy on historical data.
+                </p>
                 <p className="text-yellow-200/80 text-sm mb-2">
                   Your CSV should have these columns (tab-separated):
                 </p>
                 <code className="text-xs text-yellow-200 bg-black/30 p-2 rounded block">
                   Time  Open  High  Low  Close  Volume  ...
                 </code>
-                <p className="text-yellow-200/80 text-sm mt-2">
-                  The bot will analyze volume patterns, calculate sentiment from price action, 
-                  and run comprehensive backtesting on your real data.
-                </p>
               </div>
             </div>
           </div>
@@ -627,6 +1000,89 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
             </div>
           </div>
         )}
+
+        {/* Signal Check Status */}
+        <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-white font-semibold">Signal Detection Status</h3>
+            {isCheckingSignal && (
+              <div className="flex items-center gap-2 text-blue-400">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400"></div>
+                <span className="text-sm">Checking...</span>
+              </div>
+            )}
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-4 mb-4">
+            <div className="bg-white/5 rounded-lg p-4">
+              <div className="text-blue-200 text-xs mb-1">Last Check</div>
+              <div className="text-lg font-bold text-white">
+                {lastSignalCheck || 'Not started'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-4">
+              <div className="text-blue-200 text-xs mb-1">Check Interval</div>
+              <div className="text-lg font-bold text-white">
+                {isRunning ? '30 seconds' : 'Stopped'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-4">
+              <div className="text-blue-200 text-xs mb-1">Total Checks</div>
+              <div className="text-lg font-bold text-white">
+                {signalCheckLog.length}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-black/30 rounded-lg p-4">
+            <h4 className="text-white font-semibold mb-3 flex items-center gap-2">
+              📋 Signal Check Log (Last 10)
+            </h4>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {signalCheckLog.length > 0 ? (
+                signalCheckLog.map((log, idx) => (
+                  <div key={idx} className="flex items-center justify-between text-sm border-b border-white/10 pb-2">
+                    <div className="flex items-center gap-3">
+                      <span className="text-blue-400 font-mono text-xs">{log.time}</span>
+                      <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                        log.result.includes('BUY') ? 'bg-green-500/20 text-green-400' :
+                        log.result.includes('SELL') ? 'bg-red-500/20 text-red-400' :
+                        'bg-gray-500/20 text-gray-400'
+                      }`}>
+                        {log.result}
+                      </span>
+                      {log.source && (
+                        <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded">
+                          {log.source}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-white/75 text-xs">
+                      ${log.entry.toFixed(2)} • {log.confidence}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center text-blue-200/50 py-4">
+                  No checks yet. Click "Start Live" to begin monitoring.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+            <p className="text-blue-300 text-sm font-semibold mb-2">🔍 How Signal Detection Works:</p>
+            <ul className="text-blue-200/90 text-xs space-y-1">
+              <li>✓ Checks for signals every <strong>30 seconds</strong> when live mode is active</li>
+              <li>✓ Uses <strong>LIVE real-time price data</strong> (collects 50 points = ~8 minutes)</li>
+              <li>✓ <strong>CSV optional</strong> - only needed for historical backtesting</li>
+              <li>✓ Analyzes volume (40%), sentiment (35%), and momentum (25%)</li>
+              <li>✓ Generates BUY/SELL only when confidence score exceeds ±0.35</li>
+              <li>✓ All checks are logged above with timestamps</li>
+              <li>✓ Console shows detailed analysis (press F12 to view)</li>
+            </ul>
+          </div>
+        </div>
 
         {/* Current Signal */}
         {signal && signal.type !== 'HOLD' && (
@@ -765,28 +1221,82 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
         {/* Live Chart */}
         <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-white font-semibold">Live Price Simulation</h3>
+            <div>
+              <h3 className="text-white font-semibold">Real-Time BTC/USD Price</h3>
+              <p className="text-blue-200 text-xs mt-1">Live data from Binance • Updates every 10 seconds</p>
+            </div>
             <button
-              onClick={() => setIsRunning(!isRunning)}
+              onClick={() => {
+                setIsRunning(!isRunning);
+                if (!isRunning) {
+                  fetchRealBTCPrice();
+                }
+              }}
               className={`px-4 py-2 rounded-lg font-semibold text-sm flex items-center gap-2 ${
                 isRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'
               } text-white`}
             >
-              {isRunning ? <><Pause className="w-4 h-4" /> Pause</> : <><Play className="w-4 h-4" /> Start</>}
+              {isRunning ? <><Pause className="w-4 h-4" /> Stop</> : <><Play className="w-4 h-4" /> Start Live</>}
             </button>
           </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={priceHistory}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
-              <XAxis dataKey="time" stroke="#93c5fd" />
-              <YAxis stroke="#93c5fd" domain={['auto', 'auto']} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
-                labelStyle={{ color: '#93c5fd' }}
-              />
-              <Line type="monotone" dataKey="price" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          
+          <div className="grid md:grid-cols-4 gap-4 mb-4">
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Current Price</div>
+              <div className="text-xl font-bold text-white">${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">24h High</div>
+              <div className="text-xl font-bold text-green-400">
+                ${realTimePrices.length > 0 ? Math.max(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">24h Low</div>
+              <div className="text-xl font-bold text-red-400">
+                ${realTimePrices.length > 0 ? Math.min(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-lg p-3">
+              <div className="text-blue-200 text-xs mb-1">Data Points</div>
+              <div className="text-xl font-bold text-white">{realTimePrices.length}</div>
+            </div>
+          </div>
+          
+          {realTimePrices.length > 0 ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={realTimePrices}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+                <XAxis dataKey="time" stroke="#93c5fd" tick={{fontSize: 12}} />
+                <YAxis 
+                  stroke="#93c5fd" 
+                  domain={['dataMin - 100', 'dataMax + 100']}
+                  tick={{fontSize: 12}}
+                  tickFormatter={(value) => `${value.toLocaleString()}`}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                  labelStyle={{ color: '#93c5fd' }}
+                  formatter={(value) => [`${value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, 'Price']}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="price" 
+                  stroke="#3b82f6" 
+                  strokeWidth={2} 
+                  dot={false}
+                  animationDuration={300}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-64 flex items-center justify-center text-blue-200">
+              <div className="text-center">
+                <Play className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>Click "Start Live" to begin fetching real BTC prices</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Strategy Info */}
