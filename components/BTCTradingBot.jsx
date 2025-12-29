@@ -22,6 +22,7 @@ const BTCTradingBot = () => {
   const [showConfig, setShowConfig] = useState(false);
   const [telegramStatus, setTelegramStatus] = useState('');
   const [fileStatus, setFileStatus] = useState('');
+  const [lastSentSignal, setLastSentSignal] = useState(null);
 
   // Parse CSV file
   const parseCSV = (text) => {
@@ -471,6 +472,20 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
     }
   }, [csvData]);
 
+  // Auto-send signal to Telegram when signal changes
+  useEffect(() => {
+    if (!signal || signal.type === 'HOLD' || !telegramConfig.enabled) return;
+    
+    // Check if this is a new signal (different from last sent)
+    const signalKey = `${signal.type}-${signal.entry.toFixed(0)}`;
+    
+    if (signalKey !== lastSentSignal) {
+      console.log('New signal detected, sending to Telegram:', signalKey);
+      sendToTelegram(signal);
+      setLastSentSignal(signalKey);
+    }
+  }, [signal, telegramConfig.enabled]);
+
   // Live updates
   useEffect(() => {
     if (!isRunning) return;
@@ -490,10 +505,15 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
         
         return newPrice;
       });
+      
+      // Regenerate signal periodically when live mode is running
+      if (Math.random() > 0.7 && csvData) {
+        generateCurrentSignal();
+      }
     }, 3000);
     
     return () => clearInterval(interval);
-  }, [isRunning]);
+  }, [isRunning, csvData]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4 md:p-6">
@@ -590,12 +610,18 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
                   disabled={!telegramConfig.enabled}
                   className="px-6 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-semibold disabled:opacity-50"
                 >
-                  Send Signal
+                  Send Now
                 </button>
               </div>
               {telegramStatus && (
                 <div className="text-sm text-white bg-black/30 rounded-lg p-3">
                   {telegramStatus}
+                </div>
+              )}
+              {telegramConfig.enabled && (
+                <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3">
+                  <p className="text-green-400 text-sm font-semibold">✅ Auto-Send Active</p>
+                  <p className="text-green-300 text-xs mt-1">New signals will be sent automatically to Telegram</p>
                 </div>
               )}
             </div>
