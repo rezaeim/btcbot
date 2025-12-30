@@ -1225,19 +1225,7 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
               <h3 className="text-white font-semibold">Real-Time BTC/USD Price</h3>
               <p className="text-blue-200 text-xs mt-1">Live data from Binance • Updates every 10 seconds</p>
             </div>
-            <button
-              onClick={() => {
-                setIsRunning(!isRunning);
-                if (!isRunning) {
-                  fetchRealBTCPrice();
-                }
-              }}
-              className={`px-4 py-2 rounded-lg font-semibold text-sm flex items-center gap-2 ${
-                isRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'
-              } text-white`}
-            >
-              {isRunning ? <><Pause className="w-4 h-4" /> Stop</> : <><Play className="w-4 h-4" /> Start Live</>}
-            </button>
+            {/* Button removed - only the main "Start Live Bot" button at the top remains */}
           </div>
           
           <div className="grid md:grid-cols-4 gap-4 mb-4">
