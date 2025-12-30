@@ -629,7 +629,7 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
       // Still log the attempt
       setSignalCheckLog(prev => [{
         time: checkTime,
-        result: `Insufficient Data (${dataSource.length}/20)`,
+        result: `Insufficient Data`,
         entry: currentPrice,
         confidence: 'N/A',
         source: currentRealTimePrices.length > 0 ? 'LIVE' : 'None'
@@ -637,7 +637,7 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
       
       setSignal({ 
         type: 'HOLD', 
-        message: `Collecting data... (${dataSource.length}/20 points needed)` 
+        message: `Collecting data...` 
       });
       setLastSignalCheck(checkTime);
       setIsCheckingSignal(false);
@@ -1218,74 +1218,74 @@ ${emoji} *${signalData.type} SIGNAL - BTC/USD*
           </div>
         )}
 
-        {/* Live Chart */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-white font-semibold">Real-Time BTC/USD Price</h3>
-              <p className="text-blue-200 text-xs mt-1">Live data from Binance • Updates every 10 seconds</p>
-            </div>
-            {/* Button removed - only the main "Start Live Bot" button at the top remains */}
+      {/* Live Chart */}
+      <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-white font-semibold">Real-Time BTC/USD Price</h3>
+            <p className="text-blue-200 text-xs mt-1">Live data from Binance • Updates every 10 seconds</p>
           </div>
-          
-          <div className="grid md:grid-cols-4 gap-4 mb-4">
-            <div className="bg-white/5 rounded-lg p-3">
-              <div className="text-blue-200 text-xs mb-1">Current Price</div>
-              <div className="text-xl font-bold text-white">${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3">
-              <div className="text-blue-200 text-xs mb-1">24h High</div>
-              <div className="text-xl font-bold text-green-400">
-                ${realTimePrices.length > 0 ? Math.max(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
-              </div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3">
-              <div className="text-blue-200 text-xs mb-1">24h Low</div>
-              <div className="text-xl font-bold text-red-400">
-                ${realTimePrices.length > 0 ? Math.min(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
-              </div>
-            </div>
-            <div className="bg-white/5 rounded-lg p-3">
-              <div className="text-blue-200 text-xs mb-1">Data Points</div>
-              <div className="text-xl font-bold text-white">{realTimePrices.length}</div>
-            </div>
-          </div>
-          
-          {realTimePrices.length > 0 ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={realTimePrices}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
-                <XAxis dataKey="time" stroke="#93c5fd" tick={{fontSize: 12}} />
-                <YAxis 
-                  stroke="#93c5fd" 
-                  domain={['dataMin - 100', 'dataMax + 100']}
-                  tick={{fontSize: 12}}
-                  tickFormatter={(value) => `${value.toLocaleString()}`}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
-                  labelStyle={{ color: '#93c5fd' }}
-                  formatter={(value) => [`${value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, 'Price']}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="price" 
-                  stroke="#3b82f6" 
-                  strokeWidth={2} 
-                  dot={false}
-                  animationDuration={300}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 flex items-center justify-center text-blue-200">
-              <div className="text-center">
-                <Play className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>Click "Start Live" to begin fetching real BTC prices</p>
-              </div>
-            </div>
-          )}
+          {/* Button removed - only the main "Start Live Bot" button at the top remains */}
         </div>
+        
+        <div className="grid md:grid-cols-4 gap-4 mb-4">
+          <div className="bg-white/5 rounded-lg p-3">
+            <div className="text-blue-200 text-xs mb-1">Current Price</div>
+            <div className="text-xl font-bold text-white">${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <div className="text-blue-200 text-xs mb-1">24h High</div>
+            <div className="text-xl font-bold text-green-400">
+              ${realTimePrices.length > 0 ? Math.max(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
+            </div>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <div className="text-blue-200 text-xs mb-1">24h Low</div>
+            <div className="text-xl font-bold text-red-400">
+              ${realTimePrices.length > 0 ? Math.min(...realTimePrices.map(p => p.price)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—'}
+            </div>
+          </div>
+          <div className="bg-white/5 rounded-lg p-3">
+            <div className="text-blue-200 text-xs mb-1">Data Points</div>
+            <div className="text-xl font-bold text-white">{realTimePrices.length}</div>
+          </div>
+        </div>
+        
+        {realTimePrices.length > 0 ? (
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={realTimePrices}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
+              <XAxis dataKey="time" stroke="#93c5fd" tick={{fontSize: 12}} />
+              <YAxis 
+                stroke="#93c5fd" 
+                domain={['dataMin - 100', 'dataMax + 100']}
+                tick={{fontSize: 12}}
+                tickFormatter={(value) => `${value.toLocaleString()}`}
+              />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                labelStyle={{ color: '#93c5fd' }}
+                formatter={(value) => [`${value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, 'Price']}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="price" 
+                stroke="#3b82f6" 
+                strokeWidth={2} 
+                dot={false}
+                animationDuration={300}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-64 flex items-center justify-center text-blue-200">
+            <div className="text-center">
+              <Play className="w-12 h-12 mx-auto mb-3 opacity-50" />
+              <p>Click "Start Live" to begin fetching real BTC prices</p>
+            </div>
+          </div>
+        )}
+      </div>
 
         {/* Strategy Info */}
         <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
